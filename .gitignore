@@ -6,3 +6,8 @@ __pycache__/
 .virtual_documents/
 .vscode/
 data/outputs/
+
+.gitignore 
+*.tif
+*.tiff
+data/

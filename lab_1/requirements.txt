@@ -1,0 +1,5 @@
+numpy>=2.0
+rasterio>=1.4
+matplotlib>=3.9
+notebook>=7.0
+jupyterlab>=4.0

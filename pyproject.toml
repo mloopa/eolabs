@@ -23,4 +23,5 @@ dependencies = [
 [tool.uv.workspace]
 members = [
     "dummy",
+    "lab_5",
 ]

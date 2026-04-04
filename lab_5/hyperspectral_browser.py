@@ -718,6 +718,21 @@ class App(tk.Tk):
 
     # ── spectrum ──────────────────────────────────────────────────────────────
 
+    def _normalize_spectrum(self, values: np.ndarray) -> np.ndarray:
+        """Scale valid spectrum values to [0, 1] for display."""
+        valid = ~np.isnan(values)
+        if not valid.any():
+            return values
+
+        valid_vals = values[valid]
+        vmin = float(np.nanmin(valid_vals))
+        vmax = float(np.nanmax(valid_vals))
+        if vmax == vmin:
+            values[valid] = 0.0
+        else:
+            values[valid] = (valid_vals - vmin) / (vmax - vmin)
+        return values
+
     def _plot_spectrum(self, spectrum: np.ndarray, col: int, row: int):
         wl     = self.cube.wavelengths
         values = spectrum.copy()
@@ -727,6 +742,8 @@ class App(tk.Tk):
             mask   = np.isclose(values, self.cube.ignore_value,
                                 rtol=0.0, atol=0.5)
             values = np.where(mask, np.nan, values)
+
+        values = self._normalize_spectrum(values)
 
         self.lbl_pixel.config(
             text=f"Pixel  col={col}  row={row}  —  {self.cube.bands} bands")
@@ -758,7 +775,7 @@ class App(tk.Tk):
                   if not self.cube._wavelengths_are_indices
                   else "Band index")
         self.ax.set_xlabel(xlabel, color=self.MUTED, fontsize=9)
-        self.ax.set_ylabel("DN", color=self.MUTED, fontsize=9)
+        self.ax.set_ylabel("Normalized", color=self.MUTED, fontsize=9)
         self.ax.set_title(f"col={col}  row={row}",
                           color="#a0b0dd", fontsize=9)
         self.ax.tick_params(colors=self.MUTED, labelsize=8)

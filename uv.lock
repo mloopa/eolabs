@@ -403,7 +403,7 @@ requires-dist = [
     { name = "pydotplus", specifier = ">=2.0.2" },
     { name = "pyproj", specifier = ">=3.7.2" },
     { name = "pystac-client", specifier = ">=0.9.0" },
-    { name = "rasterio", specifier = ">=1.5.0" },
+    { name = "rasterio" },
     { name = "scikit-image", specifier = ">=0.26.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "sentinelsat", specifier = ">=1.2.1" },

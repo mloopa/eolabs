@@ -158,7 +158,7 @@ class HyperspectralCube:
         self.ignore_value = float(ignore) if ignore is not None else None
 
         # Default RGB bands (header is 1-based → convert to 0-based) ──────────
-        db = m.get("default bands")
+        db = m.get("default_bands") or m.get("default bands")
         if isinstance(db, list) and len(db) >= 3:
             self.default_rgb = [
                 int(db[0]) - 1,

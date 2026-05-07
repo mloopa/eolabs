@@ -8,3 +8,5 @@ __pycache__/
 data/outputs/
 
 **/data/
+**/sentinel2_data
+**/results

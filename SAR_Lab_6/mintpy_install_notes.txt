@@ -17,6 +17,8 @@ curl.exe -L -o RidgecrestSenDT71.tar.xz https://zenodo.org/record/11049257/files
 tar -xf RidgecrestSenDT71.tar.xz
 cd .\RidgecrestSenDT71\mintpy
 #ADD THIS LINE to the RidgecrestSenDT71.txt: mintpy.reference.date = 20190610
+#ADD THIS LINE to the SanFran...txt file: mintpy.reference.date = 20150605
+
 smallbaselineApp.py RidgecrestSenDT71.txt
 view.py velocity.h5
 view.py temporalCoherence.h5

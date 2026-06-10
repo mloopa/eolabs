@@ -808,19 +808,127 @@ nb.cells = [
         ## 5. Sentinel-1 VV Change
 
         This section will compare consistent descending-orbit Sentinel-1 GRD
-        acquisitions before and after the event. The Earth Engine project ID is
-        intentionally not stored in the repository.
+        acquisitions before and after the event. The secure runner
+        `run_sentinel1_vv_analysis.py` queries Earth Engine, selects the nearest
+        pre/post acquisitions on the same relative orbit, exports pre-event VV,
+        post-event VV, and `post - pre` VV change, and computes equal-radius
+        statistics around the landslide and stable reference locations.
+
+        The Earth Engine project ID is intentionally not stored in the
+        repository. Run the script through the PyCharm configuration containing
+        `EARTH_ENGINE_PROJECT`, or from the privately configured terminal.
+        """
+    ),
+    code(
+        """
+        if EARTH_ENGINE_READY:
+            expected_s1_raster = EE_OUTPUT_DIR / "sentinel1_vv_pre_post_change.tif"
+            if not expected_s1_raster.exists():
+                from run_sentinel1_vv_analysis import main as run_sentinel1_vv_analysis
+
+                run_sentinel1_vv_analysis()
+            else:
+                print("Existing Sentinel-1 Phase 8 outputs found; export skipped.")
+        else:
+            print(
+                "Phase 8 Earth Engine export skipped in this run because secure "
+                "Earth Engine initialization is not active."
+            )
+        """
+    ),
+    code(
+        """
+        S1_CANDIDATES_FILE = EE_OUTPUT_DIR / "sentinel1_vv_candidates.csv"
+        S1_SELECTION_FILE = EE_OUTPUT_DIR / "sentinel1_vv_selection.json"
+        S1_RASTER_FILE = EE_OUTPUT_DIR / "sentinel1_vv_pre_post_change.tif"
+        S1_STATS_FILE = EE_OUTPUT_DIR / "sentinel1_vv_stats.csv"
+        S1_FIGURE_FILE = FIGURES_DIR / "sentinel1_vv_change.png"
+
+        sentinel1_outputs_ready = all(
+            path.exists()
+            for path in (
+                S1_CANDIDATES_FILE,
+                S1_SELECTION_FILE,
+                S1_RASTER_FILE,
+                S1_STATS_FILE,
+                S1_FIGURE_FILE,
+            )
+        )
+
+        if sentinel1_outputs_ready:
+            import json
+            from IPython.display import Image
+
+            sentinel1_candidates = pd.read_csv(
+                S1_CANDIDATES_FILE, parse_dates=["date"]
+            )
+            sentinel1_selection = json.loads(S1_SELECTION_FILE.read_text())
+            sentinel1_stats = pd.read_csv(S1_STATS_FILE).set_index("sample")
+
+            selection_summary = pd.Series(
+                {
+                    "Collection": sentinel1_selection["collection"],
+                    "Orbit pass": sentinel1_selection["orbit_pass"],
+                    "Relative orbit": sentinel1_selection["relative_orbit"],
+                    "Pre-event image": sentinel1_selection["pre_image_id"],
+                    "Pre-event date": sentinel1_selection["pre_date"],
+                    "Post-event image": sentinel1_selection["post_image_id"],
+                    "Post-event date": sentinel1_selection["post_date"],
+                    "Days before event": sentinel1_selection["days_before_event"],
+                    "Days after event": sentinel1_selection["days_after_event"],
+                    "Change formula": sentinel1_selection["formula"],
+                },
+                name="Value",
+            )
+            display(selection_summary.to_frame())
+            display(sentinel1_stats.round(3))
+            display(Image(filename=str(S1_FIGURE_FILE)))
+
+            landslide_vv_change = sentinel1_stats.loc[
+                "Landslide-centered sample", "vv_change_db_mean"
+            ]
+            stable_vv_change = sentinel1_stats.loc[
+                "Stable reference sample", "vv_change_db_mean"
+            ]
+            print(
+                "Mean VV-change contrast (landslide - stable reference): "
+                f"{landslide_vv_change - stable_vv_change:.2f} dB"
+            )
+        else:
+            print(
+                "Sentinel-1 outputs are not present yet. Run "
+                "`python run_sentinel1_vv_analysis.py` with private Earth Engine "
+                "configuration, then rerun this notebook."
+            )
         """
     ),
     markdown(
         """
-        When Phase 8 is executed, record the selected image IDs, dates, orbit
-        direction, and relative orbit. Calculate:
+        The comparison uses:
 
         `VV change (dB) = post-event VV - pre-event VV`
 
-        Use identical visualization ranges for the before/after images and
-        compare statistics inside the landslide with a stable control area.
+        Pre- and post-event panels use an identical visualization range.
+        Statistics use the same 250 m landslide-centered and stable-reference
+        samples as a transparent local comparison. The final assessment should
+        compare how distinctly VV change and coherence loss separate these
+        samples while accounting for speckle, slope geometry, moisture, and
+        acquisition timing.
+
+        ### Sentinel-1 VV Interpretation
+
+        The selected images are descending Sentinel-1A acquisitions from
+        relative orbit 62 on June 19 and July 13, 2017. Mean VV change is
+        approximately `-0.49 dB` in the landslide-centered sample and
+        `-0.89 dB` in the stable-reference sample. The local contrast is only
+        about `+0.40 dB`, and the change map is dominated by fine-scale speckle
+        and terrain-related variation.
+
+        For these images and samples, VV change is worse than event-spanning
+        coherence loss for distinguishing the landslide. This does not imply
+        that VV is generally unsuitable: stronger preprocessing, spatial
+        filtering, terrain correction, multi-image composites, or a polygon
+        matched to the mapped landslide could improve the comparison.
         """
     ),
     markdown(
@@ -897,7 +1005,12 @@ nb.cells = [
                     "Strong local loss: mean 0.046 at landslide vs 0.198 at stable reference",
                     "AOI is broadly low coherence; 48-day temporal decorrelation; terrain",
                 ],
-                ["Sentinel-1 VV", "Backscatter change", "Pending Phase 8", "Speckle; geometry; moisture"],
+                [
+                    "Sentinel-1 VV",
+                    "Backscatter change",
+                    "Weak local contrast: -0.49 dB at landslide vs -0.89 dB at stable reference",
+                    "Speckle; terrain geometry; moisture; sampling geometry",
+                ],
                 ["Sentinel-2 true color", "Visible extent", "Pending Phase 9", "Clouds; illumination"],
                 ["NDVI change", "Vegetation loss", "Pending Phase 9", "Seasonality; cloud mask"],
                 ["BSI change", "Exposed soil/debris", "Pending Phase 9", "Mixed pixels; spectral ambiguity"],

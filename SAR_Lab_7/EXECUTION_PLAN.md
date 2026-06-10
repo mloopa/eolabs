@@ -220,7 +220,7 @@ standalone landslide map because coherence is low across much of the AOI.
 - [x] Define the common AOI in Earth Engine.
 - [x] Add a secure notebook cell that displays the AOI and landslide location
   on an interactive map after private initialization.
-- [ ] Verify that Earth Engine image metadata and map layers load correctly.
+- [x] Verify that Earth Engine image metadata and map layers load correctly.
 
   Run privately from `SAR_Lab_7/`:
 
@@ -239,32 +239,59 @@ standalone landslide map because coherence is low across much of the AOI.
 
 ## Phase 8: Sentinel-1 GRD VV Change
 
-- [ ] Load `COPERNICUS/S1_GRD`.
-- [ ] Filter to:
+- Secure execution command:
+
+  ```bash
+  python run_sentinel1_vv_analysis.py
+  ```
+
+  Run it from the same terminal session that has `EARTH_ENGINE_PROJECT`
+  exported, or use a PyCharm Run Configuration containing that environment
+  variable. Alternatively, start Jupyter from that terminal and use **Run All**;
+  the notebook runs the exporter automatically when Phase 8 outputs are absent.
+
+- [x] Load `COPERNICUS/S1_GRD`.
+- [x] Filter to:
   - The common AOI
   - `IW` instrument mode
   - `VV` polarization
   - Descending orbit
   - A consistent relative orbit
-- [ ] List all candidate acquisitions immediately before and after
+- [x] List all candidate acquisitions immediately before and after
   June 24, 2017.
-- [ ] Select comparable pre-event and post-event acquisitions or short
+- [x] Select comparable pre-event and post-event acquisitions or short
   composites.
-- [ ] Record image IDs, dates, orbit direction, and relative orbit number.
-- [ ] Calculate VV change in dB:
+- [x] Record image IDs, dates, orbit direction, and relative orbit number.
+- [x] Calculate VV change in dB:
 
   ```text
   VV change = post-event VV - pre-event VV
   ```
 
-- [ ] Display pre-event VV, post-event VV, and VV change using consistent
+- [x] Display pre-event VV, post-event VV, and VV change using consistent
   visualization ranges.
-- [ ] Compute summary statistics over the landslide and a stable comparison
+- [x] Compute summary statistics over the landslide and a stable comparison
   area.
-- [ ] Export the VV-change raster or final map to `output/earth_engine/`.
-- [ ] Save a report-ready VV-change figure in `figures/`.
-- [ ] Answer: Is VV change better, worse, or similar to coherence loss for
+- [x] Export the VV-change raster or final map to `output/earth_engine/`.
+- [x] Save a report-ready VV-change figure in `figures/`.
+- [x] Answer: Is VV change better, worse, or similar to coherence loss for
   mapping the landslide?
+
+Phase 8 result:
+
+```text
+Selected images: Sentinel-1A descending, relative orbit 62
+Pre-event date: 2017-06-19 (4 days before event)
+Pre-event image: S1A_IW_GRDH_1SDV_20170619T230410_20170619T230435_017109_01C859_52F1
+Post-event date: 2017-07-13 (19 days after event)
+Post-event image: S1A_IW_GRDH_1SDV_20170713T230411_20170713T230436_017459_01D2E8_2197
+Landslide-centered mean VV change: -0.49 dB
+Stable-reference mean VV change: -0.89 dB
+Local contrast (landslide - stable): +0.40 dB
+Interpretation: VV change is worse than coherence loss for mapping the
+landslide in this comparison because the local contrast is weak and the map is
+strongly affected by speckle and terrain-related variation.
+```
 
 ## Phase 9: Sentinel-2 Optical Analysis
 

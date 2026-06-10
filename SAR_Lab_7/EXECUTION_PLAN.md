@@ -149,15 +149,15 @@ data/licsar_pre_event/selected_ifg_pairs.csv
 
 ## Phase 5: Analysis Notebook
 
-- [ ] Create `SAR_Lab_7_analysis.ipynb`.
-- [ ] Use the `Python (SAR Lab 7)` kernel.
-- [ ] Add a reproducibility header containing:
+- [x] Create `SAR_Lab_7_analysis.ipynb`.
+- [x] Use the `Python (SAR Lab 7)` kernel.
+- [x] Add a reproducibility header containing:
   - Event name and date
   - AOI bounds
   - LiCSAR frame `062D_05831_131313`
   - Software versions
   - Input/output paths
-- [ ] Add notebook sections:
+- [x] Add notebook sections:
   1. Study area and assignment objectives
   2. LiCSAR network and MintPy processing
   3. Reference-point selection and SBAS result
@@ -167,30 +167,41 @@ data/licsar_pre_event/selected_ifg_pairs.csv
   7. NDVI and BSI change
   8. Cross-method comparison
   9. Conclusions and limitations
-- [ ] Ensure notebook cells are executable from top to bottom.
-- [ ] Save reusable figures from the notebook into `figures/`.
+- [x] Ensure notebook cells are executable from top to bottom.
+- [x] Save reusable figures from the notebook into `figures/`.
 
 ## Phase 6: Event-Spanning LiCSAR Coherence
 
-- [ ] Identify a LiCSAR interferogram with one acquisition before and one after
+- [x] Identify a LiCSAR interferogram with one acquisition before and one after
   June 24, 2017.
-- [ ] Record the selected pair:
+- [x] Record the selected pair:
 
   ```text
-  Event-spanning pair:
-  Temporal baseline:
-  Reason for selection:
+  Event-spanning pair: 20170607_20170725
+  Temporal baseline: 48 days
+  Reason for selection: shortest available pair spanning the event, with
+  acquisitions 17 days before and 31 days after June 24, 2017.
   ```
 
-- [ ] Download its `.geo.cc.tif` coherence file into
+- [x] Download its `.geo.cc.tif` coherence file into
   `data/event_coherence/`.
-- [ ] Crop the coherence raster to the same AOI.
-- [ ] Plot coherence with a fixed `0-1` scale and mark the landslide location.
-- [ ] Compare coherence inside the mapped landslide with nearby stable terrain.
-- [ ] Save the final coherence figure in `figures/`.
-- [ ] Answer: Is coherence loss useful for mapping this landslide?
-- [ ] Discuss temporal decorrelation, vegetation, terrain geometry, and the
+- [x] Crop the coherence raster to the same AOI.
+- [x] Plot coherence with a fixed `0-1` scale and mark the landslide location.
+- [x] Compare coherence inside the mapped landslide with nearby stable terrain.
+- [x] Save the final coherence figure in `figures/`.
+- [x] Answer: Is coherence loss useful for mapping this landslide?
+- [x] Discuss temporal decorrelation, vegetation, terrain geometry, and the
   selected acquisition interval as limitations.
+
+Phase 6 result:
+
+```text
+Landslide-centered mean coherence: 0.046
+Stable-reference mean coherence: 0.198
+Landslide/stable mean ratio: 0.23
+Interpretation: coherence loss is useful supporting evidence, but not a
+standalone landslide map because coherence is low across much of the AOI.
+```
 
 ## Phase 7: Google Earth Engine Initialization
 
@@ -330,9 +341,9 @@ Note: Sentinel-2 is multispectral, although the assignment uses the term
 ## Immediate Next Actions
 
 - [x] Verify notebook and Earth Engine packages.
-- [ ] Create `SAR_Lab_7_analysis.ipynb`.
-- [ ] Inspect `velocity.h5` and `timeseries.h5`.
+- [x] Create `SAR_Lab_7_analysis.ipynb`.
+- [x] Inspect `velocity.h5` and `timeseries.h5`.
 - [ ] Select and record the stable manual reference pixel.
 - [ ] Rerun MintPy from `reference_point`.
-- [ ] Begin the notebook with the MintPy network, velocity, and time-series
+- [x] Begin the notebook with the MintPy network, velocity, and time-series
   figures before moving to Earth Engine.

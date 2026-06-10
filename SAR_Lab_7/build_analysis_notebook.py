@@ -724,32 +724,92 @@ nb.cells = [
     ),
     markdown(
         """
+        ### Secure Google Earth Engine Initialization
+
+        The Google Earth Engine project ID is read only from the process
+        environment and is never printed or written into this notebook:
+
+        ```bash
+        export EARTH_ENGINE_PROJECT="your-private-project-id"
+        jupyter lab
+        ```
+
+        Run both commands in the same terminal. Do not paste the project ID into
+        a notebook cell, configuration file, Git commit, or report.
+        """
+    ),
+    code(
+        """
+        EARTH_ENGINE_PROJECT = os.environ.get("EARTH_ENGINE_PROJECT", "").strip()
+        EARTH_ENGINE_READY = False
+        ee_aoi = None
+        ee_landslide = None
+        gee_map = None
+
+        try:
+            import ee
+            import geemap
+        except ImportError:
+            print("Install earthengine-api and geemap in the sar-lab-7 environment.")
+        else:
+            if not EARTH_ENGINE_PROJECT:
+                print(
+                    "Earth Engine is not initialized in this run. "
+                    "Set EARTH_ENGINE_PROJECT privately before starting Jupyter."
+                )
+            else:
+                try:
+                    ee.Initialize(project=EARTH_ENGINE_PROJECT)
+                    ee_aoi = ee.Geometry.Rectangle(list(AOI))
+                    ee_landslide = ee.Geometry.Point(
+                        [LANDSLIDE_LON, LANDSLIDE_LAT]
+                    )
+
+                    metadata_probe = (
+                        ee.ImageCollection("COPERNICUS/S1_GRD")
+                        .filterBounds(ee_aoi)
+                        .filterDate("2017-06-01", "2017-08-01")
+                    )
+                    metadata_count = metadata_probe.size().getInfo()
+
+                    gee_map = geemap.Map()
+                    gee_map.centerObject(ee_aoi, 12)
+                    gee_map.addLayer(
+                        ee_aoi,
+                        {"color": "yellow"},
+                        "Common analysis AOI",
+                    )
+                    gee_map.addLayer(
+                        ee_landslide,
+                        {"color": "red"},
+                        "Approximate landslide location",
+                    )
+                    EARTH_ENGINE_READY = True
+                    print(
+                        "Earth Engine initialized successfully using the private "
+                        "environment variable. Project ID is intentionally hidden."
+                    )
+                    print(
+                        "Sentinel-1 metadata probe count for June-July 2017:",
+                        metadata_count,
+                    )
+                    display(gee_map)
+                except Exception as exc:
+                    print(
+                        "Earth Engine initialization or metadata validation failed "
+                        f"with {type(exc).__name__}. Check authentication, project "
+                        "registration, and permissions. Details are hidden to avoid "
+                        "leaking identifiers."
+                    )
+        """
+    ),
+    markdown(
+        """
         ## 5. Sentinel-1 VV Change
 
         This section will compare consistent descending-orbit Sentinel-1 GRD
         acquisitions before and after the event. The Earth Engine project ID is
         intentionally not stored in the repository.
-        """
-    ),
-    code(
-        """
-        EARTH_ENGINE_PROJECT = os.environ.get("EARTH_ENGINE_PROJECT")
-        try:
-            import ee
-            import geemap
-            earth_engine_packages_ready = True
-        except ImportError:
-            earth_engine_packages_ready = False
-
-        if EARTH_ENGINE_PROJECT and earth_engine_packages_ready:
-            ee.Initialize(project=EARTH_ENGINE_PROJECT)
-            ee_aoi = ee.Geometry.Rectangle(list(AOI))
-            print("Earth Engine initialized for project:", EARTH_ENGINE_PROJECT)
-        else:
-            print(
-                "Earth Engine section is prepared but not initialized. "
-                "Set the EARTH_ENGINE_PROJECT environment variable when starting Jupyter."
-            )
         """
     ),
     markdown(

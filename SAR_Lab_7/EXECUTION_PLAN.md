@@ -205,20 +205,37 @@ standalone landslide map because coherence is low across much of the AOI.
 
 ## Phase 7: Google Earth Engine Initialization
 
-- [ ] Add the Earth Engine project ID to the notebook without committing
-  credentials:
+- [x] Configure the notebook to receive the Earth Engine project ID without
+  storing or committing credentials:
 
-  ```python
-  import ee
-  import geemap
-
-  PROJECT_ID = "YOUR_PROJECT_ID"
-  ee.Initialize(project=PROJECT_ID)
+  ```bash
+  read -s "EARTH_ENGINE_PROJECT?Google Earth Engine project ID: "
+  export EARTH_ENGINE_PROJECT
+  echo
   ```
 
-- [ ] Define the common AOI in Earth Engine.
-- [ ] Display the AOI and landslide location on an interactive map.
+  The notebook reads `EARTH_ENGINE_PROJECT`, never prints it, and does not
+  write it into the notebook or repository. `.env` files are ignored by Git.
+
+- [x] Define the common AOI in Earth Engine.
+- [x] Add a secure notebook cell that displays the AOI and landslide location
+  on an interactive map after private initialization.
 - [ ] Verify that Earth Engine image metadata and map layers load correctly.
+
+  Run privately from `SAR_Lab_7/`:
+
+  ```bash
+  python verify_gee_setup.py
+  jupyter lab
+  ```
+
+  Then run the secure Earth Engine initialization cell. It should report a
+  Sentinel-1 metadata count and display the AOI map without printing the
+  project ID. After closing Jupyter, remove the variable from the shell:
+
+  ```bash
+  unset EARTH_ENGINE_PROJECT
+  ```
 
 ## Phase 8: Sentinel-1 GRD VV Change
 

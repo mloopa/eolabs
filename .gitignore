@@ -6,3 +6,5 @@ __pycache__/
 .virtual_documents/
 .vscode/
 data/outputs/
+SAR_Lab_7/data
+SAR_Lab_7/output

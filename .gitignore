@@ -6,3 +6,8 @@ __pycache__/
 .virtual_documents/
 .vscode/
 data/outputs/
+lab_5/to_explain/cross_correlation.py
+lab_5/to_explain/sentinel-2_download.py
+lab_5/to_explain/sentinel-2_search.py
+lab_5/to_explain/sentinel-2_water.py
+lab_5/to_explain/spectral_angle_mapper.py

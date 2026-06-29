@@ -10,3 +10,6 @@ data/outputs/
 **/data/
 **/sentinel2_data
 **/results
+
+**/licsar
+**/mintpy

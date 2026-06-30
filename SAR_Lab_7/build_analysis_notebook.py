@@ -39,9 +39,9 @@ nb.cells = [
         event-spanning coherence, Sentinel-1 GRD VV change, and Sentinel-2
         optical change analysis.
 
-        **Current status:** the LiCSAR stack and initial MintPy processing are
-        complete. Later sections are prepared for the event and Earth Engine
-        analyses and remain safely executable until their inputs are supplied.
+        **Current status:** the LiCSAR/MintPy, event coherence, Sentinel-1, and
+        Sentinel-2 analyses are complete. The remaining work is to turn these
+        results into the final report PDF.
         """
     ),
     markdown(
@@ -705,21 +705,16 @@ nb.cells = [
         """
         ### Coherence Interpretation
 
-        The event-spanning pair shows substantially lower coherence in the
-        landslide-centered sample than around the stable reference pixel. For
-        the equal-radius samples used here, mean coherence is approximately
-        `0.046` at the landslide and `0.198` at the stable reference, so the
-        landslide sample retains only about 23% of the stable sample's mean
-        coherence.
+        The event-spanning pair has very low coherence in both local samples.
+        For the equal-radius samples used here, mean coherence is approximately
+        `0.046` at the landslide-centered sample and `0.053` at the manual
+        reference sample. This means the event-spanning coherence raster does
+        not cleanly separate the landslide from nearby low-coherence terrain.
 
-        This indicates that coherence loss is useful as supporting evidence for
-        the disturbed area in this case. It is not sufficient as a standalone
-        landslide map because coherence is low across much of the mountainous
-        AOI. The 48-day interval also includes temporal decorrelation unrelated
-        to the failure, while vegetation, moisture change, steep-terrain
-        layover/shadow, and geometric differences can all reduce coherence.
-        The point-centered sample is also only a proxy until the optical
-        analysis provides a mapped landslide polygon.
+        Coherence loss is therefore weak supporting evidence in this workflow,
+        not a standalone landslide map. Vegetation, temporal decorrelation over
+        the 48-day interval, layover/shadow, and geometric differences can all
+        reduce coherence across the mountainous AOI.
         """
     ),
     markdown(
@@ -935,37 +930,176 @@ nb.cells = [
         """
         ## 6. Sentinel-2 True Color and Landslide Extent
 
-        Phase 9 will use `COPERNICUS/S2_SR_HARMONIZED`. Select cloud-free or
-        minimally cloudy pre-event and post-event imagery, apply a cloud and
-        shadow mask, display true-color composites, and delineate the affected
-        area. Record acquisition IDs, dates, cloud conditions, and calculated
-        area.
+        Phase 9 first tries `COPERNICUS/S2_SR_HARMONIZED`. If no 2017
+        Level-2A surface-reflectance imagery is available for this AOI, the
+        secure runner `run_sentinel2_optical_analysis.py` falls back to
+        `COPERNICUS/S2_HARMONIZED` Level-1C top-of-atmosphere imagery. This is
+        expected for some early Sentinel-2 scenes because Level-2A coverage was
+        not global in 2017.
+
+        The runner measures clear-pixel coverage over the AOI, selects the
+        closest sufficiently clear pre/post pair on one MGRS tile, and excludes
+        clouds using SCL+QA60 for SR or QA60-only for TOA fallback imagery.
+
+        The affected-area classification is intentionally explicit and
+        reproducible. The initial strict NDVI-loss plus BSI-increase rule
+        under-detected the visible scar, so the final mask uses the post-event
+        true-color brightness scar plus NDVI decrease. Within 1.8 km of the
+        approximate landslide location, pixels must satisfy:
+
+        - `post brightness >= 0.115`, where brightness is mean post-event RGB
+          TOA reflectance
+        - `post NDVI <= 0.0`
+        - `NDVI change <= -0.10`
+
+        The largest connected component is retained as the affected area. This
+        is an optical-scar classification, not a manually validated engineering
+        boundary, so its area should be reported with that caveat.
         """
     ),
     code(
         """
-        sentinel2_inputs = {
-            "collection": "COPERNICUS/S2_SR_HARMONIZED",
-            "event_date": EVENT_DATE.date().isoformat(),
-            "aoi": AOI,
-            "true_color_bands": ["B4", "B3", "B2"],
-        }
-        pd.Series(sentinel2_inputs, name="Value").to_frame()
+        if EARTH_ENGINE_READY:
+            expected_s2_raster = EE_OUTPUT_DIR / "sentinel2_pre_post_indices.tif"
+            if not expected_s2_raster.exists():
+                from run_sentinel2_optical_analysis import (
+                    main as run_sentinel2_optical_analysis,
+                )
+
+                run_sentinel2_optical_analysis()
+            else:
+                print("Existing Sentinel-2 Phase 9 outputs found; export skipped.")
+        else:
+            print(
+                "Phase 9 Earth Engine export skipped in this run because secure "
+                "Earth Engine initialization is not active."
+            )
+        """
+    ),
+    code(
+        """
+        S2_CANDIDATES_FILE = EE_OUTPUT_DIR / "sentinel2_candidates.csv"
+        S2_SELECTION_FILE = EE_OUTPUT_DIR / "sentinel2_selection.json"
+        S2_RASTER_FILE = EE_OUTPUT_DIR / "sentinel2_pre_post_indices.tif"
+        S2_STATS_FILE = EE_OUTPUT_DIR / "sentinel2_stats.csv"
+        S2_EXTENT_FILE = EE_OUTPUT_DIR / "sentinel2_landslide_extent.geojson"
+        S2_TRUE_COLOR_FIGURE = FIGURES_DIR / "sentinel2_true_color_extent.png"
+        S2_NDVI_FIGURE = FIGURES_DIR / "sentinel2_ndvi_change.png"
+        S2_BSI_FIGURE = FIGURES_DIR / "sentinel2_bsi_change.png"
+
+        sentinel2_outputs_ready = all(
+            path.exists()
+            for path in (
+                S2_CANDIDATES_FILE,
+                S2_SELECTION_FILE,
+                S2_RASTER_FILE,
+                S2_STATS_FILE,
+                S2_EXTENT_FILE,
+                S2_TRUE_COLOR_FIGURE,
+                S2_NDVI_FIGURE,
+                S2_BSI_FIGURE,
+            )
+        )
+
+        sentinel2_assessment = "Pending Phase 9 export"
+        ndvi_assessment = "Pending Phase 9 export"
+        bsi_assessment = "Pending Phase 9 export"
+
+        if sentinel2_outputs_ready:
+            import json
+            from IPython.display import Image
+
+            sentinel2_candidates = pd.read_csv(
+                S2_CANDIDATES_FILE, parse_dates=["date"]
+            )
+            sentinel2_selection = json.loads(S2_SELECTION_FILE.read_text())
+            sentinel2_stats = pd.read_csv(S2_STATS_FILE).set_index("sample")
+
+            selection_summary = pd.Series(
+                {
+                    "Collection": sentinel2_selection["collection"],
+                    "MGRS tile": sentinel2_selection["mgrs_tile"],
+                    "Sensing orbit": sentinel2_selection["sensing_orbit"],
+                    "Pre-event image": sentinel2_selection["pre_image_id"],
+                    "Pre-event date": sentinel2_selection["pre_date"],
+                    "Pre global cloud (%)": sentinel2_selection[
+                        "pre_cloudy_pixel_percentage"
+                    ],
+                    "Pre AOI clear (%)": 100
+                    * sentinel2_selection["pre_aoi_clear_fraction"],
+                    "Post-event image": sentinel2_selection["post_image_id"],
+                    "Post-event date": sentinel2_selection["post_date"],
+                    "Post global cloud (%)": sentinel2_selection[
+                        "post_cloudy_pixel_percentage"
+                    ],
+                    "Post AOI clear (%)": 100
+                    * sentinel2_selection["post_aoi_clear_fraction"],
+                    "Affected-area rule": sentinel2_selection["affected_rule"],
+                    "Affected area (ha)": sentinel2_selection["affected_area_ha"],
+                    "Affected area (km2)": sentinel2_selection["affected_area_km2"],
+                },
+                name="Value",
+            )
+            display(selection_summary.to_frame())
+            display(
+                sentinel2_candidates[
+                    [
+                        "date",
+                        "MGRS_TILE",
+                        "CLOUDY_PIXEL_PERCENTAGE",
+                        "aoi_clear_fraction",
+                    ]
+                ].round(3)
+            )
+            display(sentinel2_stats.round(3))
+            display(Image(filename=str(S2_TRUE_COLOR_FIGURE)))
+            display(Image(filename=str(S2_NDVI_FIGURE)))
+            display(Image(filename=str(S2_BSI_FIGURE)))
+
+            affected = sentinel2_stats.loc["Classified affected area"]
+            stable = sentinel2_stats.loc["Stable reference sample"]
+            area_ha = sentinel2_selection["affected_area_ha"]
+            sentinel2_assessment = (
+                f"Change-based optical extent: {area_ha:.1f} ha"
+            )
+            ndvi_assessment = (
+                f"Affected mean change {affected['ndvi_change']:.3f}; "
+                f"stable sample {stable['ndvi_change']:.3f}"
+            )
+            bsi_assessment = (
+                f"Affected mean change {affected['bsi_change']:.3f}; "
+                f"stable sample {stable['bsi_change']:.3f}"
+            )
+            print(sentinel2_assessment)
+            print(ndvi_assessment)
+            print(bsi_assessment)
+        else:
+            print(
+                "Sentinel-2 outputs are not present yet. Run "
+                "`python run_sentinel2_optical_analysis.py` with private Earth "
+                "Engine configuration, then rerun this notebook."
+            )
         """
     ),
     markdown(
         """
         ## 7. NDVI and BSI Change
 
-        The optical analysis will quantify vegetation loss and increased bare
+        The optical analysis quantifies vegetation loss and increased bare
         soil/debris using:
 
         `NDVI = (B8 - B4) / (B8 + B4)`
 
         `BSI = ((B11 + B4) - (B8 + B2)) / ((B11 + B4) + (B8 + B2))`
 
-        Compute pre-event, post-event, and difference layers using the same
-        cloud-masked images selected in the previous section.
+        Pre-event, post-event, and `post - pre` layers use the same cloud-masked
+        images selected above. Negative NDVI change indicates reduced green
+        vegetation. Positive BSI change can indicate increased exposure of soil
+        or debris, but in this image pair BSI change is not a reliable mapping
+        threshold because the final scar shows a negative mean BSI change.
+        Neither index uniquely identifies a landslide, so their joint spatial
+        pattern and true-color context are more informative than either
+        threshold alone.
         """
     ),
     code(
@@ -990,20 +1124,28 @@ nb.cells = [
         """
         ## 8. Cross-Method Comparison
 
-        Complete this table after Phases 6-9. Use both visual evidence and
-        computed statistics rather than ranking methods by appearance alone.
+        The methods answer different parts of the lab question. SBAS is the
+        pre-failure deformation analysis, while coherence, Sentinel-1 VV, and
+        Sentinel-2 describe the event disturbance and mapped surface change.
+        The comparison below uses the computed statistics plus the saved
+        report figures.
         """
     ),
     code(
         """
         comparison = pd.DataFrame(
             [
-                ["MintPy SBAS", "Pre-failure motion", "Pending interpretation", "Sparse dates; reference sensitivity"],
+                [
+                    "MintPy SBAS",
+                    "Pre-failure LOS motion",
+                    "Landslide pixel shows a broad negative trend of about -1.07 +/- 0.08 cm/year; no clear late acceleration is resolved",
+                    "Stack ends on 2017-06-07; sparse acquisitions; atmospheric/seasonal scatter; reference sensitivity",
+                ],
                 [
                     "LiCSAR coherence",
                     "Event disturbance",
-                    "Strong local loss: mean 0.046 at landslide vs 0.198 at stable reference",
-                    "AOI is broadly low coherence; 48-day temporal decorrelation; terrain",
+                    "Weak separator: mean coherence 0.046 at landslide vs 0.053 at manual reference",
+                    "Both local samples are low coherence; 48-day temporal decorrelation; terrain",
                 ],
                 [
                     "Sentinel-1 VV",
@@ -1011,9 +1153,24 @@ nb.cells = [
                     "Weak local contrast: -0.49 dB at landslide vs -0.89 dB at stable reference",
                     "Speckle; terrain geometry; moisture; sampling geometry",
                 ],
-                ["Sentinel-2 true color", "Visible extent", "Pending Phase 9", "Clouds; illumination"],
-                ["NDVI change", "Vegetation loss", "Pending Phase 9", "Seasonality; cloud mask"],
-                ["BSI change", "Exposed soil/debris", "Pending Phase 9", "Mixed pixels; spectral ambiguity"],
+                [
+                    "Sentinel-2 true color",
+                    "Visible extent",
+                    f"Best spatial map: optical scar extent {sentinel2_selection['affected_area_ha']:.1f} ha ({sentinel2_selection['affected_area_km2']:.4f} km2)",
+                    "Clouds; illumination; threshold-derived boundary",
+                ],
+                [
+                    "NDVI change",
+                    "Vegetation loss",
+                    ndvi_assessment,
+                    "Seasonality; cloud mask; terrain shadow",
+                ],
+                [
+                    "BSI change",
+                    "Exposed soil/debris",
+                    bsi_assessment,
+                    "Mixed pixels; spectral ambiguity; terrain shadow",
+                ],
             ],
             columns=["Method", "Primary signal", "Current assessment", "Key limitation"],
         )
@@ -1022,21 +1179,54 @@ nb.cells = [
     ),
     markdown(
         """
+        The manually selected reference point is preferable for this lab because
+        it is close to the landslide, outside the interpreted scar, and has high
+        temporal coherence. It forces the time series to be interpreted relative
+        to a local stable point instead of relying on MintPy's automatic choice,
+        which may be farther away or affected by different seasonal,
+        atmospheric, or topographic signals. After rereferencing, the selected
+        reference pixel is fixed to zero velocity, so the landslide trend is a
+        relative LOS displacement signal rather than an absolute ground-motion
+        measurement.
+
+        Compared with the published PS/SqueeSAR-style study linked in the
+        assignment, this SBAS recreation is consistent in showing pre-event
+        motion at the landslide, but it is weaker for detecting the final
+        pre-failure acceleration. The decisive limitation is acquisition
+        availability: the LiCSAR/MintPy stack used here ends on 2017-06-07,
+        while the failure occurred on 2017-06-24. The assignment notes that the
+        last few points in the paper's figure were not processed by COMET-LiCSAR,
+        so this workflow cannot reproduce the late-stage deformation behavior
+        shown by the published PS analysis.
+        """
+    ),
+    markdown(
+        """
         ## 9. Conclusions and Limitations
 
-        The final conclusions should answer:
+        The strongest mapping evidence comes from Sentinel-2 true color and
+        NDVI loss. The bright post-event scar is visually clear, and the
+        refined optical mask estimates an affected area of about 80.04 ha
+        (0.8004 km2). Mean NDVI change inside the mapped affected area is
+        -0.229, while the stable reference sample increases by +0.333, so the
+        index supports vegetation removal or replacement by fresh debris. BSI
+        is less useful for this image pair: the affected area has a mean BSI
+        change of -0.108, so a simple positive-BSI-change rule would
+        under-detect the scar.
 
-        - Does the SBAS analysis show meaningful pre-failure deformation?
-        - How did reference-point selection affect the interpreted time series?
-        - Does coherence loss map the failure effectively?
-        - Is Sentinel-1 VV change better, worse, or similar to coherence?
-        - Which Sentinel-2 product best maps the affected area?
-        - What do NDVI and BSI changes imply about vegetation and exposed soil?
+        Event-spanning coherence is weak for mapping the landslide in this run:
+        the landslide-centered mean coherence is 0.046 and the manual-reference
+        sample is also very low at 0.053. Sentinel-1 VV change is similarly
+        weak: the landslide mean change is -0.49 dB and the stable sample is
+        -0.89 dB, giving small local contrast and strong sensitivity to speckle
+        and terrain effects.
 
-        Limitations to discuss include sparse LiCSAR acquisitions, the June 7
-        end date, atmospheric and seasonal signals, low coherence, steep-terrain
-        layover/shadow, Sentinel-1 speckle, optical cloud contamination, and
-        differing acquisition dates and spatial resolutions.
+        The main uncertainties are sparse LiCSAR acquisition timing, the
+        pre-event stack ending on 2017-06-07, atmospheric and seasonal phase
+        signals, reference-point sensitivity, low coherence in vegetated steep
+        terrain, layover/shadow, Sentinel-1 speckle, Sentinel-2 cloud and
+        illumination effects, and differing acquisition dates and spatial
+        resolutions across the sensors.
         """
     ),
     code(

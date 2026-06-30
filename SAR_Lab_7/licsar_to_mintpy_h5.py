@@ -85,8 +85,11 @@ def read_baselines(metadata_dir: Path) -> dict[str, float]:
     """
     Parse LiCSAR metadata/baselines file as flexibly as possible.
 
-    Expected idea:
-        one date per line, with a perpendicular baseline value somewhere nearby.
+    Common LiCSAR format:
+        reference_date acquisition_date perpendicular_baseline temporal_baseline
+
+    For example:
+        20160916 20141009 -64 -708
 
     If parsing fails, return an empty dict.
     """
@@ -102,20 +105,24 @@ def read_baselines(metadata_dir: Path) -> dict[str, float]:
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
 
-            date_match = re.search(r"\b(20\d{6}|19\d{6})\b", line)
-            if not date_match:
+            dates = re.findall(r"\b(?:20\d{6}|19\d{6})\b", line)
+            if not dates:
                 continue
 
-            date = date_match.group(1)
+            # LiCSAR lists the common reference date first and the acquisition
+            # date second. Fall back to the only date for simpler formats.
+            date = dates[1] if len(dates) >= 2 else dates[0]
 
-            # All numeric values after removing the date token.
-            line_no_date = line.replace(date, " ")
+            # Remove all date tokens before looking for baseline values.
+            line_no_date = line
+            for date_token in dates:
+                line_no_date = line_no_date.replace(date_token, " ", 1)
             nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", line_no_date)
 
             if not nums:
                 continue
 
-            # Usually the first floating value is adequate for relative baseline.
+            # The first remaining value is the perpendicular baseline.
             try:
                 out[date] = float(nums[0])
             except ValueError:

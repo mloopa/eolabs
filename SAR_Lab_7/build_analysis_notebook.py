@@ -1,0 +1,1249 @@
+from pathlib import Path
+from textwrap import dedent
+
+import nbformat as nbf
+
+
+LAB_DIR = Path(__file__).resolve().parent
+OUT_FILE = LAB_DIR / "SAR_Lab_7_analysis.ipynb"
+
+
+def markdown(text: str):
+    return nbf.v4.new_markdown_cell(dedent(text).strip())
+
+
+def code(text: str):
+    return nbf.v4.new_code_cell(dedent(text).strip())
+
+
+nb = nbf.v4.new_notebook()
+nb.metadata = {
+    "kernelspec": {
+        "display_name": "Python (SAR Lab 7)",
+        "language": "python",
+        "name": "sar-lab-7",
+    },
+    "language_info": {
+        "name": "python",
+        "version": "3.11",
+    },
+}
+
+nb.cells = [
+    markdown(
+        """
+        # SAR Lab 7: Xinmo Landslide Analysis
+
+        This notebook documents the June 24, 2017 Xinmo landslide laboratory
+        workflow. It combines a pre-event LiCSAR/MintPy SBAS time series with
+        event-spanning coherence, Sentinel-1 GRD VV change, and Sentinel-2
+        optical change analysis.
+
+        **Current status:** the LiCSAR/MintPy, event coherence, Sentinel-1, and
+        Sentinel-2 analyses are complete. The remaining work is to turn these
+        results into the final report PDF.
+        """
+    ),
+    markdown(
+        """
+        ## Reproducibility Header
+
+        - **Event:** Xinmo landslide, Sichuan Province, China
+        - **Event date:** 2017-06-24
+        - **Approximate landslide location:** 103.6506 E, 32.0661 N
+        - **Processing AOI:** west 103.62, south 32.04, east 103.68, north 32.09
+        - **LiCSAR frame:** `062D_05831_131313`
+        - **MintPy inputs:** `output/mintpy/inputs/`
+        - **MintPy results:** `output/mintpy/`
+        - **Reusable figures:** `figures/`
+
+        The code below discovers the lab directory automatically, whether the
+        notebook is launched from `SAR_Lab_7/` or its parent repository.
+        """
+    ),
+    code(
+        """
+        import os
+        import platform
+        import sys
+        from pathlib import Path
+
+        os.environ.setdefault("MPLCONFIGDIR", str(Path.cwd() / "output" / ".matplotlib"))
+
+        import h5py
+        import matplotlib
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import pandas as pd
+        import rasterio
+        import scipy
+        from matplotlib.patches import Circle
+        from matplotlib.dates import DateFormatter, YearLocator
+        from matplotlib.ticker import FormatStrFormatter
+        from rasterio.windows import from_bounds
+
+        EVENT_DATE = pd.Timestamp("2017-06-24")
+        LANDSLIDE_LON = 103.6506
+        LANDSLIDE_LAT = 32.0661
+        AOI = (103.62, 32.04, 103.68, 32.09)
+        LICSAR_FRAME = "062D_05831_131313"
+
+        cwd = Path.cwd().resolve()
+        if (cwd / "SAR_Lab_7.pdf").exists():
+            LAB_DIR = cwd
+        elif (cwd / "SAR_Lab_7" / "SAR_Lab_7.pdf").exists():
+            LAB_DIR = cwd / "SAR_Lab_7"
+        else:
+            raise FileNotFoundError("Run this notebook from SAR_Lab_7/ or its parent repository.")
+
+        MINTPY_DIR = LAB_DIR / "output" / "mintpy"
+        INPUTS_DIR = MINTPY_DIR / "inputs"
+        FIGURES_DIR = LAB_DIR / "figures"
+        EE_OUTPUT_DIR = LAB_DIR / "output" / "earth_engine"
+        EVENT_COH_DIR = LAB_DIR / "data" / "event_coherence"
+        EVENT_COH_OUTPUT_DIR = LAB_DIR / "output" / "event_coherence"
+
+        for directory in (
+            FIGURES_DIR,
+            EE_OUTPUT_DIR,
+            EVENT_COH_DIR,
+            EVENT_COH_OUTPUT_DIR,
+            Path(os.environ["MPLCONFIGDIR"]),
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        required_files = [
+            INPUTS_DIR / "ifgramStack.h5",
+            INPUTS_DIR / "geometryGeo.h5",
+            MINTPY_DIR / "timeseries.h5",
+            MINTPY_DIR / "velocity.h5",
+            MINTPY_DIR / "temporalCoherence.h5",
+        ]
+        missing = [str(path) for path in required_files if not path.exists()]
+        if missing:
+            raise FileNotFoundError("Missing required MintPy files:\\n" + "\\n".join(missing))
+
+        versions = pd.Series(
+            {
+                "Python": sys.version.split()[0],
+                "Platform": platform.platform(),
+                "NumPy": np.__version__,
+                "Pandas": pd.__version__,
+                "SciPy": scipy.__version__,
+                "Matplotlib": matplotlib.__version__,
+                "h5py": h5py.__version__,
+                "Rasterio": rasterio.__version__,
+            },
+            name="Version",
+        )
+        versions.to_frame()
+        """
+    ),
+    markdown(
+        """
+        ## 1. Study Area and Assignment Objectives
+
+        The assignment has three linked objectives:
+
+        1. Reconstruct pre-failure deformation with an SBAS time series.
+        2. Compare event mapping using LiCSAR coherence loss and Sentinel-1 VV
+           backscatter change.
+        3. Map the affected area with Sentinel-2 and quantify land-surface
+           change using indices such as NDVI and BSI.
+
+        The plots below verify the MintPy subset and place the approximate
+        landslide location inside the processed terrain.
+        """
+    ),
+    code(
+        """
+        def read_attrs(h5_file):
+            return {key: value.decode() if isinstance(value, bytes) else value
+                    for key, value in h5_file.attrs.items()}
+
+
+        def pixel_centers(attrs, shape):
+            rows, cols = shape
+            x_first = float(attrs["X_FIRST"])
+            y_first = float(attrs["Y_FIRST"])
+            x_step = float(attrs["X_STEP"])
+            y_step = float(attrs["Y_STEP"])
+            lon = x_first + x_step * (np.arange(cols) + 0.5)
+            lat = y_first + y_step * (np.arange(rows) + 0.5)
+            return lon, lat
+
+
+        def nearest_pixel(lon, lat, target_lon, target_lat):
+            x = int(np.argmin(np.abs(lon - target_lon)))
+            y = int(np.argmin(np.abs(lat - target_lat)))
+            return y, x
+
+
+        with h5py.File(INPUTS_DIR / "geometryGeo.h5", "r") as h5:
+            geometry_attrs = read_attrs(h5)
+            height = h5["height"][:]
+            longitude = h5["longitude"][:]
+            latitude = h5["latitude"][:]
+
+        lon_axis = longitude[0, :]
+        lat_axis = latitude[:, 0]
+        landslide_yx = nearest_pixel(
+            lon_axis, lat_axis, LANDSLIDE_LON, LANDSLIDE_LAT
+        )
+
+        dem_data = np.ma.masked_where(height == 0, height)
+        dem_cmap = plt.get_cmap("terrain").copy()
+        dem_cmap.set_bad("#d9d9d9")
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        dem = ax.imshow(
+            dem_data,
+            extent=[lon_axis.min(), lon_axis.max(), lat_axis.min(), lat_axis.max()],
+            origin="upper",
+            cmap=dem_cmap,
+        )
+        ax.scatter(
+            LANDSLIDE_LON,
+            LANDSLIDE_LAT,
+            marker="*",
+            s=180,
+            color="red",
+            edgecolor="white",
+            linewidth=0.8,
+            label="Approximate landslide location",
+        )
+        ax.set(
+            title="Xinmo Landslide Study Area and MintPy DEM",
+            xlabel="Longitude",
+            ylabel="Latitude",
+        )
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        ax.legend(loc="lower left")
+        fig.colorbar(dem, ax=ax, label="Elevation (m)")
+        fig.tight_layout()
+        study_area_figure = FIGURES_DIR / "study_area_dem.png"
+        fig.savefig(study_area_figure, dpi=220, bbox_inches="tight")
+        plt.show()
+
+        print(f"Nearest MintPy pixel to the landslide: Y/X = {landslide_yx}")
+        print(f"Saved: {study_area_figure.relative_to(LAB_DIR)}")
+        """
+    ),
+    markdown(
+        """
+        ## 2. LiCSAR Network and MintPy Processing
+
+        LiCSAR frame `062D_05831_131313` was filtered to interferograms ending
+        before the event. A 108-day maximum temporal baseline was used because
+        the original 72-day selection produced two disconnected network
+        components. The expanded selection contains a bridging interferogram
+        and can be inverted as one connected network.
+        """
+    ),
+    code(
+        """
+        with h5py.File(INPUTS_DIR / "ifgramStack.h5", "r") as h5:
+            stack_attrs = read_attrs(h5)
+            date_pairs = h5["date"][:].astype(str)
+            pair_bperp = h5["bperp"][:].astype(float)
+            drop_ifgram = h5["dropIfgram"][:].astype(bool)
+
+        pair_table = pd.DataFrame(date_pairs, columns=["reference_date", "secondary_date"])
+        pair_table["reference_date"] = pd.to_datetime(pair_table["reference_date"])
+        pair_table["secondary_date"] = pd.to_datetime(pair_table["secondary_date"])
+        pair_table["temporal_baseline_days"] = (
+            pair_table["secondary_date"] - pair_table["reference_date"]
+        ).dt.days
+        pair_table["perpendicular_baseline_m"] = pair_bperp
+        pair_table["kept"] = drop_ifgram
+
+        acquisitions = pd.DatetimeIndex(
+            sorted(set(pair_table["reference_date"]) | set(pair_table["secondary_date"]))
+        )
+        baseline_by_date = {}
+        for row in pair_table.itertuples():
+            baseline_by_date.setdefault(row.reference_date, 0.0)
+            baseline_by_date.setdefault(
+                row.secondary_date,
+                baseline_by_date[row.reference_date] + row.perpendicular_baseline_m,
+            )
+
+        network_summary = pd.Series(
+            {
+                "Acquisition start": acquisitions.min().date(),
+                "Acquisition end": acquisitions.max().date(),
+                "Number of acquisitions": len(acquisitions),
+                "Number of interferograms": len(pair_table),
+                "Maximum temporal baseline (days)": int(
+                    pair_table["temporal_baseline_days"].max()
+                ),
+                "Perpendicular baseline min (m)": float(pair_bperp.min()),
+                "Perpendicular baseline max (m)": float(pair_bperp.max()),
+            },
+            name="Value",
+        )
+        display(network_summary.to_frame())
+
+        fig, ax = plt.subplots(figsize=(11, 5.5))
+        for row in pair_table.itertuples():
+            color = "#3973ac" if row.kept else "#b0b0b0"
+            ax.plot(
+                [row.reference_date, row.secondary_date],
+                [
+                    baseline_by_date.get(row.reference_date, 0.0),
+                    baseline_by_date.get(row.secondary_date, row.perpendicular_baseline_m),
+                ],
+                color=color,
+                linewidth=0.7,
+                alpha=0.6,
+            )
+        ax.scatter(
+            acquisitions,
+            [baseline_by_date.get(date, 0.0) for date in acquisitions],
+            color="#111111",
+            s=18,
+            zorder=3,
+        )
+        ax.axvline(EVENT_DATE, color="red", linestyle="--", linewidth=1.2, label="Event date")
+        ax.set(
+            title="LiCSAR Interferogram Network Used for MintPy SBAS",
+            xlabel="Acquisition date",
+            ylabel="Relative perpendicular baseline (m)",
+        )
+        ax.xaxis.set_major_locator(YearLocator())
+        ax.xaxis.set_major_formatter(DateFormatter("%Y"))
+        ax.grid(alpha=0.2)
+        ax.legend()
+        fig.tight_layout()
+        network_figure = FIGURES_DIR / "mintpy_network_overview.png"
+        fig.savefig(network_figure, dpi=220, bbox_inches="tight")
+        plt.show()
+
+        print(f"Saved: {network_figure.relative_to(LAB_DIR)}")
+        """
+    ),
+    markdown(
+        """
+        ## 3. Reference-Point Selection and SBAS Result
+
+        MintPy was first run with an automatic reference point. A nearby stable
+        pixel outside the landslide was then selected manually and the workflow
+        rerun from `reference_point`. The current HDF5 metadata records the
+        final reference at Y/X `19/26`.
+
+        Velocity is shown in millimeters per year for readability. The
+        time-series plot compares the approximate landslide pixel with the
+        final reference pixel.
+        """
+    ),
+    code(
+        """
+        with h5py.File(MINTPY_DIR / "velocity.h5", "r") as h5:
+            velocity_attrs = read_attrs(h5)
+            velocity = h5["velocity"][:]
+            velocity_std = h5["velocityStd"][:]
+
+        with h5py.File(MINTPY_DIR / "temporalCoherence.h5", "r") as h5:
+            temporal_coherence = h5["temporalCoherence"][:]
+
+        ref_y = int(velocity_attrs["REF_Y"])
+        ref_x = int(velocity_attrs["REF_X"])
+        ref_lon = float(velocity_attrs["REF_LON"])
+        ref_lat = float(velocity_attrs["REF_LAT"])
+
+        velocity_mm = velocity * 1000.0
+        valid_velocity = velocity_mm[np.isfinite(velocity_mm)]
+        vmax = max(5.0, float(np.nanpercentile(np.abs(valid_velocity), 98)))
+
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.4), constrained_layout=True)
+        extent = [lon_axis.min(), lon_axis.max(), lat_axis.min(), lat_axis.max()]
+
+        im0 = axes[0].imshow(
+            velocity_mm,
+            extent=extent,
+            origin="upper",
+            cmap="RdBu_r",
+            vmin=-vmax,
+            vmax=vmax,
+        )
+        axes[0].scatter(
+            LANDSLIDE_LON, LANDSLIDE_LAT, marker="*", s=150,
+            color="yellow", edgecolor="black", linewidth=0.8, label="Landslide"
+        )
+        axes[0].scatter(
+            ref_lon, ref_lat, marker="s", s=55,
+            facecolor="none", edgecolor="black", linewidth=1.4, label="Reference"
+        )
+        axes[0].set(title="MintPy LOS Velocity", xlabel="Longitude", ylabel="Latitude")
+        axes[0].xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        axes[0].yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        axes[0].legend(loc="lower left")
+        fig.colorbar(im0, ax=axes[0], label="LOS velocity (mm/year)")
+
+        im1 = axes[1].imshow(
+            temporal_coherence,
+            extent=extent,
+            origin="upper",
+            cmap="viridis",
+            vmin=0,
+            vmax=1,
+        )
+        axes[1].scatter(
+            LANDSLIDE_LON, LANDSLIDE_LAT, marker="*", s=150,
+            color="red", edgecolor="white", linewidth=0.8
+        )
+        axes[1].scatter(
+            ref_lon, ref_lat, marker="s", s=55,
+            facecolor="none", edgecolor="white", linewidth=1.4
+        )
+        axes[1].set(
+            title="MintPy Temporal Coherence",
+            xlabel="Longitude",
+            ylabel="Latitude",
+        )
+        axes[1].xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        axes[1].yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        fig.colorbar(im1, ax=axes[1], label="Temporal coherence")
+
+        result_map_figure = FIGURES_DIR / "mintpy_velocity_temporal_coherence.png"
+        fig.savefig(result_map_figure, dpi=220, bbox_inches="tight")
+        plt.show()
+
+        reference_summary = pd.Series(
+            {
+                "Reference Y": ref_y,
+                "Reference X": ref_x,
+                "Reference latitude": ref_lat,
+                "Reference longitude": ref_lon,
+                "Landslide Y": landslide_yx[0],
+                "Landslide X": landslide_yx[1],
+                "Landslide velocity (mm/year)": velocity_mm[landslide_yx],
+                "Landslide temporal coherence": temporal_coherence[landslide_yx],
+            },
+            name="Value",
+        )
+        display(reference_summary.to_frame())
+        print(f"Saved: {result_map_figure.relative_to(LAB_DIR)}")
+        """
+    ),
+    code(
+        """
+        with h5py.File(MINTPY_DIR / "timeseries.h5", "r") as h5:
+            timeseries_attrs = read_attrs(h5)
+            dates = pd.to_datetime(h5["date"][:].astype(str))
+            displacement = h5["timeseries"][:]
+
+        landslide_series_mm = displacement[:, landslide_yx[0], landslide_yx[1]] * 1000.0
+        reference_series_mm = displacement[:, ref_y, ref_x] * 1000.0
+
+        time_series_table = pd.DataFrame(
+            {
+                "date": dates,
+                "landslide_displacement_mm": landslide_series_mm,
+                "reference_displacement_mm": reference_series_mm,
+            }
+        ).set_index("date")
+
+        fig, ax = plt.subplots(figsize=(11, 5.5))
+        ax.plot(
+            time_series_table.index,
+            time_series_table["landslide_displacement_mm"],
+            marker="o",
+            markersize=3.5,
+            linewidth=1.2,
+            label=f"Landslide pixel Y/X {landslide_yx[0]}/{landslide_yx[1]}",
+        )
+        ax.plot(
+            time_series_table.index,
+            time_series_table["reference_displacement_mm"],
+            color="black",
+            linewidth=1.0,
+            alpha=0.7,
+            label=f"Reference pixel Y/X {ref_y}/{ref_x}",
+        )
+        ax.axvline(EVENT_DATE, color="red", linestyle="--", linewidth=1.2, label="Event date")
+        ax.set(
+            title="Pre-Event MintPy LOS Displacement Time Series",
+            xlabel="Date",
+            ylabel="LOS displacement (mm)",
+        )
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        time_series_figure = FIGURES_DIR / "mintpy_landslide_timeseries.png"
+        fig.savefig(time_series_figure, dpi=220, bbox_inches="tight")
+        plt.show()
+
+        display(time_series_table.tail(10).round(2))
+        print(f"Saved: {time_series_figure.relative_to(LAB_DIR)}")
+        print(
+            "The final LiCSAR acquisition is",
+            dates.max().date(),
+            "which precedes the June 24 event and omits the final observations shown in the paper.",
+        )
+        """
+    ),
+    markdown(
+        """
+        ### Initial SBAS Interpretation
+
+        Complete this narrative after reviewing the velocity map and several
+        nearby pixels in `tsview.py`:
+
+        - Describe the sign and magnitude of deformation at the landslide.
+        - State whether the series appears linear, seasonal, accelerating, or
+          noisy.
+        - Explain why the manual reference pixel improves interpretation.
+        - Compare the timing qualitatively with the PS-based result in the
+          supplied paper.
+        - Note that the LiCSAR stack ends on June 7, 2017, so it cannot reproduce
+          every late pre-failure point shown in the paper.
+        """
+    ),
+    markdown(
+        """
+        ## 4. Event-Spanning Coherence
+
+        The selected LiCSAR pair is `20170607_20170725`, with acquisitions 17
+        days before and 31 days after the event. Its 48-day temporal baseline is
+        the shortest available pair spanning June 24, 2017.
+
+        LiCSAR stores this coherence raster as unsigned bytes. Valid values are
+        normalized by 255 to the conventional `0-1` coherence range. The
+        comparison below uses equal-radius samples centered on:
+
+        - the approximate landslide location; and
+        - the manually selected stable MintPy reference point.
+
+        These samples are transparent local proxies, not a final mapped
+        landslide polygon.
+        """
+    ),
+    code(
+        """
+        EVENT_PAIR = "20170607_20170725"
+        EVENT_COH_FILE = EVENT_COH_DIR / f"{EVENT_PAIR}.geo.cc.tif"
+        EVENT_COH_CROP = EVENT_COH_OUTPUT_DIR / f"{EVENT_PAIR}_aoi.geo.cc.tif"
+        EVENT_COH_STATS = EVENT_COH_OUTPUT_DIR / f"{EVENT_PAIR}_coherence_stats.csv"
+        SAMPLE_RADIUS_DEG = 0.0025
+
+        if not EVENT_COH_FILE.exists():
+            raise FileNotFoundError(
+                f"Missing {EVENT_COH_FILE.relative_to(LAB_DIR)}. "
+                "Download the selected event-spanning coherence raster first."
+            )
+
+        with rasterio.open(EVENT_COH_FILE) as src:
+            crop_window = from_bounds(*AOI, transform=src.transform)
+            crop_window = crop_window.round_offsets().round_lengths()
+            coherence_raw = src.read(1, window=crop_window).astype(np.float32)
+            coherence_transform = src.window_transform(crop_window)
+            coherence_profile = src.profile.copy()
+            coherence_profile.update(
+                height=coherence_raw.shape[0],
+                width=coherence_raw.shape[1],
+                transform=coherence_transform,
+                dtype="float32",
+                nodata=np.nan,
+                compress="deflate",
+            )
+
+        coherence = coherence_raw / 255.0
+        coherence[coherence_raw == 0] = np.nan
+
+        with rasterio.open(EVENT_COH_CROP, "w", **coherence_profile) as dst:
+            dst.write(coherence.astype(np.float32), 1)
+
+        coh_rows, coh_cols = np.indices(coherence.shape)
+        coh_lon = coherence_transform.c + coherence_transform.a * (coh_cols + 0.5)
+        coh_lat = coherence_transform.f + coherence_transform.e * (coh_rows + 0.5)
+
+        sample_centers = {
+            "Landslide-centered sample": (LANDSLIDE_LON, LANDSLIDE_LAT),
+            "Stable reference sample": (ref_lon, ref_lat),
+        }
+        sample_values = {}
+        stats_rows = []
+
+        for sample_name, (sample_lon, sample_lat) in sample_centers.items():
+            sample_mask = (
+                (coh_lon - sample_lon) ** 2 + (coh_lat - sample_lat) ** 2
+                <= SAMPLE_RADIUS_DEG**2
+            )
+            values = coherence[sample_mask & np.isfinite(coherence)]
+            sample_values[sample_name] = values
+            stats_rows.append(
+                {
+                    "sample": sample_name,
+                    "center_lon": sample_lon,
+                    "center_lat": sample_lat,
+                    "radius_degrees": SAMPLE_RADIUS_DEG,
+                    "valid_pixels": values.size,
+                    "mean_coherence": values.mean(),
+                    "median_coherence": np.median(values),
+                    "std_coherence": values.std(),
+                    "q25": np.percentile(values, 25),
+                    "q75": np.percentile(values, 75),
+                    "fraction_below_0_15": np.mean(values < 0.15),
+                }
+            )
+
+        coherence_stats = pd.DataFrame(stats_rows).set_index("sample")
+        coherence_stats.to_csv(EVENT_COH_STATS)
+
+        landslide_mean = coherence_stats.loc[
+            "Landslide-centered sample", "mean_coherence"
+        ]
+        stable_mean = coherence_stats.loc[
+            "Stable reference sample", "mean_coherence"
+        ]
+        mean_ratio = landslide_mean / stable_mean
+
+        display(coherence_stats.round(3))
+        print(f"Landslide/stable mean coherence ratio: {mean_ratio:.2f}")
+        print(f"Saved crop: {EVENT_COH_CROP.relative_to(LAB_DIR)}")
+        print(f"Saved statistics: {EVENT_COH_STATS.relative_to(LAB_DIR)}")
+        """
+    ),
+    code(
+        """
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(13, 5.5),
+            gridspec_kw={"width_ratios": [1.35, 0.75]},
+            constrained_layout=True,
+        )
+
+        coherence_map = axes[0].imshow(
+            coherence,
+            extent=[AOI[0], AOI[2], AOI[1], AOI[3]],
+            origin="upper",
+            cmap="viridis",
+            vmin=0,
+            vmax=1,
+        )
+        colors = {
+            "Landslide-centered sample": "#ff3b30",
+            "Stable reference sample": "#ffffff",
+        }
+        for sample_name, (sample_lon, sample_lat) in sample_centers.items():
+            axes[0].scatter(
+                sample_lon,
+                sample_lat,
+                marker="*" if "Landslide" in sample_name else "s",
+                s=140 if "Landslide" in sample_name else 55,
+                facecolor=colors[sample_name] if "Landslide" in sample_name else "none",
+                edgecolor="white",
+                linewidth=1.2,
+                label=sample_name,
+                zorder=4,
+            )
+            axes[0].add_patch(
+                Circle(
+                    (sample_lon, sample_lat),
+                    SAMPLE_RADIUS_DEG,
+                    fill=False,
+                    edgecolor=colors[sample_name],
+                    linewidth=1.2,
+                    linestyle="--",
+                )
+            )
+
+        axes[0].set(
+            title=f"Event-Spanning LiCSAR Coherence\\n{EVENT_PAIR}",
+            xlabel="Longitude",
+            ylabel="Latitude",
+        )
+        axes[0].xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        axes[0].yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+        axes[0].legend(loc="lower left", fontsize=8)
+        fig.colorbar(coherence_map, ax=axes[0], label="Coherence", shrink=0.92)
+
+        box_data = [
+            sample_values["Landslide-centered sample"],
+            sample_values["Stable reference sample"],
+        ]
+        box = axes[1].boxplot(
+            box_data,
+            tick_labels=["Landslide", "Stable reference"],
+            patch_artist=True,
+            widths=0.6,
+        )
+        box["boxes"][0].set(facecolor="#ffb3ad")
+        box["boxes"][1].set(facecolor="#c7dcef")
+        axes[1].scatter(
+            np.repeat(1, box_data[0].size),
+            box_data[0],
+            color="#a71910",
+            s=16,
+            alpha=0.65,
+        )
+        axes[1].scatter(
+            np.repeat(2, box_data[1].size),
+            box_data[1],
+            color="#245b8a",
+            s=16,
+            alpha=0.65,
+        )
+        axes[1].set(
+            title="Local Coherence Comparison",
+            ylabel="Coherence",
+            ylim=(0, 1),
+        )
+        axes[1].grid(axis="y", alpha=0.25)
+
+        coherence_figure = FIGURES_DIR / "event_spanning_coherence.png"
+        fig.savefig(coherence_figure, dpi=220, bbox_inches="tight")
+        plt.show()
+
+        print(f"Saved: {coherence_figure.relative_to(LAB_DIR)}")
+        """
+    ),
+    markdown(
+        """
+        ### Coherence Interpretation
+
+        The event-spanning pair has very low coherence in both local samples.
+        For the equal-radius samples used here, mean coherence is approximately
+        `0.046` at the landslide-centered sample and `0.053` at the manual
+        reference sample. This means the event-spanning coherence raster does
+        not cleanly separate the landslide from nearby low-coherence terrain.
+
+        Coherence loss is therefore weak supporting evidence in this workflow,
+        not a standalone landslide map. Vegetation, temporal decorrelation over
+        the 48-day interval, layover/shadow, and geometric differences can all
+        reduce coherence across the mountainous AOI.
+        """
+    ),
+    markdown(
+        """
+        ### Secure Google Earth Engine Initialization
+
+        The Google Earth Engine project ID is read only from the process
+        environment and is never printed or written into this notebook:
+
+        ```bash
+        export EARTH_ENGINE_PROJECT="your-private-project-id"
+        jupyter lab
+        ```
+
+        Run both commands in the same terminal. Do not paste the project ID into
+        a notebook cell, configuration file, Git commit, or report.
+        """
+    ),
+    code(
+        """
+        EARTH_ENGINE_PROJECT = os.environ.get("EARTH_ENGINE_PROJECT", "").strip()
+        EARTH_ENGINE_READY = False
+        ee_aoi = None
+        ee_landslide = None
+        gee_map = None
+
+        try:
+            import ee
+            import geemap
+        except ImportError:
+            print("Install earthengine-api and geemap in the sar-lab-7 environment.")
+        else:
+            if not EARTH_ENGINE_PROJECT:
+                print(
+                    "Earth Engine is not initialized in this run. "
+                    "Set EARTH_ENGINE_PROJECT privately before starting Jupyter."
+                )
+            else:
+                try:
+                    ee.Initialize(project=EARTH_ENGINE_PROJECT)
+                    ee_aoi = ee.Geometry.Rectangle(list(AOI))
+                    ee_landslide = ee.Geometry.Point(
+                        [LANDSLIDE_LON, LANDSLIDE_LAT]
+                    )
+
+                    metadata_probe = (
+                        ee.ImageCollection("COPERNICUS/S1_GRD")
+                        .filterBounds(ee_aoi)
+                        .filterDate("2017-06-01", "2017-08-01")
+                    )
+                    metadata_count = metadata_probe.size().getInfo()
+
+                    gee_map = geemap.Map()
+                    gee_map.centerObject(ee_aoi, 12)
+                    gee_map.addLayer(
+                        ee_aoi,
+                        {"color": "yellow"},
+                        "Common analysis AOI",
+                    )
+                    gee_map.addLayer(
+                        ee_landslide,
+                        {"color": "red"},
+                        "Approximate landslide location",
+                    )
+                    EARTH_ENGINE_READY = True
+                    print(
+                        "Earth Engine initialized successfully using the private "
+                        "environment variable. Project ID is intentionally hidden."
+                    )
+                    print(
+                        "Sentinel-1 metadata probe count for June-July 2017:",
+                        metadata_count,
+                    )
+                    display(gee_map)
+                except Exception as exc:
+                    print(
+                        "Earth Engine initialization or metadata validation failed "
+                        f"with {type(exc).__name__}. Check authentication, project "
+                        "registration, and permissions. Details are hidden to avoid "
+                        "leaking identifiers."
+                    )
+        """
+    ),
+    markdown(
+        """
+        ## 5. Sentinel-1 VV Change
+
+        This section will compare consistent descending-orbit Sentinel-1 GRD
+        acquisitions before and after the event. The secure runner
+        `run_sentinel1_vv_analysis.py` queries Earth Engine, selects the nearest
+        pre/post acquisitions on the same relative orbit, exports pre-event VV,
+        post-event VV, and `post - pre` VV change, and computes equal-radius
+        statistics around the landslide and stable reference locations.
+
+        The Earth Engine project ID is intentionally not stored in the
+        repository. Run the script through the PyCharm configuration containing
+        `EARTH_ENGINE_PROJECT`, or from the privately configured terminal.
+        """
+    ),
+    code(
+        """
+        if EARTH_ENGINE_READY:
+            expected_s1_raster = EE_OUTPUT_DIR / "sentinel1_vv_pre_post_change.tif"
+            if not expected_s1_raster.exists():
+                from run_sentinel1_vv_analysis import main as run_sentinel1_vv_analysis
+
+                run_sentinel1_vv_analysis()
+            else:
+                print("Existing Sentinel-1 Phase 8 outputs found; export skipped.")
+        else:
+            print(
+                "Phase 8 Earth Engine export skipped in this run because secure "
+                "Earth Engine initialization is not active."
+            )
+        """
+    ),
+    code(
+        """
+        S1_CANDIDATES_FILE = EE_OUTPUT_DIR / "sentinel1_vv_candidates.csv"
+        S1_SELECTION_FILE = EE_OUTPUT_DIR / "sentinel1_vv_selection.json"
+        S1_RASTER_FILE = EE_OUTPUT_DIR / "sentinel1_vv_pre_post_change.tif"
+        S1_STATS_FILE = EE_OUTPUT_DIR / "sentinel1_vv_stats.csv"
+        S1_FIGURE_FILE = FIGURES_DIR / "sentinel1_vv_change.png"
+
+        sentinel1_outputs_ready = all(
+            path.exists()
+            for path in (
+                S1_CANDIDATES_FILE,
+                S1_SELECTION_FILE,
+                S1_RASTER_FILE,
+                S1_STATS_FILE,
+                S1_FIGURE_FILE,
+            )
+        )
+
+        if sentinel1_outputs_ready:
+            import json
+            from IPython.display import Image
+
+            sentinel1_candidates = pd.read_csv(
+                S1_CANDIDATES_FILE, parse_dates=["date"]
+            )
+            sentinel1_selection = json.loads(S1_SELECTION_FILE.read_text())
+            sentinel1_stats = pd.read_csv(S1_STATS_FILE).set_index("sample")
+
+            selection_summary = pd.Series(
+                {
+                    "Collection": sentinel1_selection["collection"],
+                    "Orbit pass": sentinel1_selection["orbit_pass"],
+                    "Relative orbit": sentinel1_selection["relative_orbit"],
+                    "Pre-event image": sentinel1_selection["pre_image_id"],
+                    "Pre-event date": sentinel1_selection["pre_date"],
+                    "Post-event image": sentinel1_selection["post_image_id"],
+                    "Post-event date": sentinel1_selection["post_date"],
+                    "Days before event": sentinel1_selection["days_before_event"],
+                    "Days after event": sentinel1_selection["days_after_event"],
+                    "Change formula": sentinel1_selection["formula"],
+                },
+                name="Value",
+            )
+            display(selection_summary.to_frame())
+            display(sentinel1_stats.round(3))
+            display(Image(filename=str(S1_FIGURE_FILE)))
+
+            landslide_vv_change = sentinel1_stats.loc[
+                "Landslide-centered sample", "vv_change_db_mean"
+            ]
+            stable_vv_change = sentinel1_stats.loc[
+                "Stable reference sample", "vv_change_db_mean"
+            ]
+            print(
+                "Mean VV-change contrast (landslide - stable reference): "
+                f"{landslide_vv_change - stable_vv_change:.2f} dB"
+            )
+        else:
+            print(
+                "Sentinel-1 outputs are not present yet. Run "
+                "`python run_sentinel1_vv_analysis.py` with private Earth Engine "
+                "configuration, then rerun this notebook."
+            )
+        """
+    ),
+    markdown(
+        """
+        The comparison uses:
+
+        `VV change (dB) = post-event VV - pre-event VV`
+
+        Pre- and post-event panels use an identical visualization range.
+        Statistics use the same 250 m landslide-centered and stable-reference
+        samples as a transparent local comparison. The final assessment should
+        compare how distinctly VV change and coherence loss separate these
+        samples while accounting for speckle, slope geometry, moisture, and
+        acquisition timing.
+
+        ### Sentinel-1 VV Interpretation
+
+        The selected images are descending Sentinel-1A acquisitions from
+        relative orbit 62 on June 19 and July 13, 2017. Mean VV change is
+        approximately `-0.49 dB` in the landslide-centered sample and
+        `-0.89 dB` in the stable-reference sample. The local contrast is only
+        about `+0.40 dB`, and the change map is dominated by fine-scale speckle
+        and terrain-related variation.
+
+        For these images and samples, VV change is worse than event-spanning
+        coherence loss for distinguishing the landslide. This does not imply
+        that VV is generally unsuitable: stronger preprocessing, spatial
+        filtering, terrain correction, multi-image composites, or a polygon
+        matched to the mapped landslide could improve the comparison.
+        """
+    ),
+    markdown(
+        """
+        ## 6. Sentinel-2 True Color and Landslide Extent
+
+        Phase 9 first tries `COPERNICUS/S2_SR_HARMONIZED`. If no 2017
+        Level-2A surface-reflectance imagery is available for this AOI, the
+        secure runner `run_sentinel2_optical_analysis.py` falls back to
+        `COPERNICUS/S2_HARMONIZED` Level-1C top-of-atmosphere imagery. This is
+        expected for some early Sentinel-2 scenes because Level-2A coverage was
+        not global in 2017.
+
+        The runner measures clear-pixel coverage over the AOI, selects the
+        closest sufficiently clear pre/post pair on one MGRS tile, and excludes
+        clouds using SCL+QA60 for SR or QA60-only for TOA fallback imagery.
+
+        The affected-area classification is intentionally explicit and
+        reproducible. The initial strict NDVI-loss plus BSI-increase rule
+        under-detected the visible scar, so the final mask uses the post-event
+        true-color brightness scar plus NDVI decrease. Within 1.8 km of the
+        approximate landslide location, pixels must satisfy:
+
+        - `post brightness >= 0.115`, where brightness is mean post-event RGB
+          TOA reflectance
+        - `post NDVI <= 0.0`
+        - `NDVI change <= -0.10`
+
+        The largest connected component is retained as the affected area. This
+        is an optical-scar classification, not a manually validated engineering
+        boundary, so its area should be reported with that caveat.
+        """
+    ),
+    code(
+        """
+        if EARTH_ENGINE_READY:
+            expected_s2_raster = EE_OUTPUT_DIR / "sentinel2_pre_post_indices.tif"
+            if not expected_s2_raster.exists():
+                from run_sentinel2_optical_analysis import (
+                    main as run_sentinel2_optical_analysis,
+                )
+
+                run_sentinel2_optical_analysis()
+            else:
+                print("Existing Sentinel-2 Phase 9 outputs found; export skipped.")
+        else:
+            print(
+                "Phase 9 Earth Engine export skipped in this run because secure "
+                "Earth Engine initialization is not active."
+            )
+        """
+    ),
+    code(
+        """
+        S2_CANDIDATES_FILE = EE_OUTPUT_DIR / "sentinel2_candidates.csv"
+        S2_SELECTION_FILE = EE_OUTPUT_DIR / "sentinel2_selection.json"
+        S2_RASTER_FILE = EE_OUTPUT_DIR / "sentinel2_pre_post_indices.tif"
+        S2_STATS_FILE = EE_OUTPUT_DIR / "sentinel2_stats.csv"
+        S2_EXTENT_FILE = EE_OUTPUT_DIR / "sentinel2_landslide_extent.geojson"
+        S2_TRUE_COLOR_FIGURE = FIGURES_DIR / "sentinel2_true_color_extent.png"
+        S2_NDVI_FIGURE = FIGURES_DIR / "sentinel2_ndvi_change.png"
+        S2_BSI_FIGURE = FIGURES_DIR / "sentinel2_bsi_change.png"
+
+        sentinel2_outputs_ready = all(
+            path.exists()
+            for path in (
+                S2_CANDIDATES_FILE,
+                S2_SELECTION_FILE,
+                S2_RASTER_FILE,
+                S2_STATS_FILE,
+                S2_EXTENT_FILE,
+                S2_TRUE_COLOR_FIGURE,
+                S2_NDVI_FIGURE,
+                S2_BSI_FIGURE,
+            )
+        )
+
+        sentinel2_assessment = "Pending Phase 9 export"
+        ndvi_assessment = "Pending Phase 9 export"
+        bsi_assessment = "Pending Phase 9 export"
+
+        if sentinel2_outputs_ready:
+            import json
+            from IPython.display import Image
+
+            sentinel2_candidates = pd.read_csv(
+                S2_CANDIDATES_FILE, parse_dates=["date"]
+            )
+            sentinel2_selection = json.loads(S2_SELECTION_FILE.read_text())
+            sentinel2_stats = pd.read_csv(S2_STATS_FILE).set_index("sample")
+
+            selection_summary = pd.Series(
+                {
+                    "Collection": sentinel2_selection["collection"],
+                    "MGRS tile": sentinel2_selection["mgrs_tile"],
+                    "Sensing orbit": sentinel2_selection["sensing_orbit"],
+                    "Pre-event image": sentinel2_selection["pre_image_id"],
+                    "Pre-event date": sentinel2_selection["pre_date"],
+                    "Pre global cloud (%)": sentinel2_selection[
+                        "pre_cloudy_pixel_percentage"
+                    ],
+                    "Pre AOI clear (%)": 100
+                    * sentinel2_selection["pre_aoi_clear_fraction"],
+                    "Post-event image": sentinel2_selection["post_image_id"],
+                    "Post-event date": sentinel2_selection["post_date"],
+                    "Post global cloud (%)": sentinel2_selection[
+                        "post_cloudy_pixel_percentage"
+                    ],
+                    "Post AOI clear (%)": 100
+                    * sentinel2_selection["post_aoi_clear_fraction"],
+                    "Affected-area rule": sentinel2_selection["affected_rule"],
+                    "Affected area (ha)": sentinel2_selection["affected_area_ha"],
+                    "Affected area (km2)": sentinel2_selection["affected_area_km2"],
+                },
+                name="Value",
+            )
+            display(selection_summary.to_frame())
+            display(
+                sentinel2_candidates[
+                    [
+                        "date",
+                        "MGRS_TILE",
+                        "CLOUDY_PIXEL_PERCENTAGE",
+                        "aoi_clear_fraction",
+                    ]
+                ].round(3)
+            )
+            display(sentinel2_stats.round(3))
+            display(Image(filename=str(S2_TRUE_COLOR_FIGURE)))
+            display(Image(filename=str(S2_NDVI_FIGURE)))
+            display(Image(filename=str(S2_BSI_FIGURE)))
+
+            affected = sentinel2_stats.loc["Classified affected area"]
+            stable = sentinel2_stats.loc["Stable reference sample"]
+            area_ha = sentinel2_selection["affected_area_ha"]
+            sentinel2_assessment = (
+                f"Change-based optical extent: {area_ha:.1f} ha"
+            )
+            ndvi_assessment = (
+                f"Affected mean change {affected['ndvi_change']:.3f}; "
+                f"stable sample {stable['ndvi_change']:.3f}"
+            )
+            bsi_assessment = (
+                f"Affected mean change {affected['bsi_change']:.3f}; "
+                f"stable sample {stable['bsi_change']:.3f}"
+            )
+            print(sentinel2_assessment)
+            print(ndvi_assessment)
+            print(bsi_assessment)
+        else:
+            print(
+                "Sentinel-2 outputs are not present yet. Run "
+                "`python run_sentinel2_optical_analysis.py` with private Earth "
+                "Engine configuration, then rerun this notebook."
+            )
+        """
+    ),
+    markdown(
+        """
+        ## 7. NDVI and BSI Change
+
+        The optical analysis quantifies vegetation loss and increased bare
+        soil/debris using:
+
+        `NDVI = (B8 - B4) / (B8 + B4)`
+
+        `BSI = ((B11 + B4) - (B8 + B2)) / ((B11 + B4) + (B8 + B2))`
+
+        Pre-event, post-event, and `post - pre` layers use the same cloud-masked
+        images selected above. Negative NDVI change indicates reduced green
+        vegetation. Positive BSI change can indicate increased exposure of soil
+        or debris, but in this image pair BSI change is not a reliable mapping
+        threshold because the final scar shows a negative mean BSI change.
+        Neither index uniquely identifies a landslide, so their joint spatial
+        pattern and true-color context are more informative than either
+        threshold alone.
+        """
+    ),
+    code(
+        """
+        index_definitions = pd.DataFrame(
+            {
+                "Index": ["NDVI", "BSI"],
+                "Formula": [
+                    "(B8 - B4) / (B8 + B4)",
+                    "((B11 + B4) - (B8 + B2)) / ((B11 + B4) + (B8 + B2))",
+                ],
+                "Expected landslide response": [
+                    "Decrease where vegetation was removed",
+                    "Increase where soil and debris became exposed",
+                ],
+            }
+        )
+        index_definitions
+        """
+    ),
+    markdown(
+        """
+        ## 8. Cross-Method Comparison
+
+        The methods answer different parts of the lab question. SBAS is the
+        pre-failure deformation analysis, while coherence, Sentinel-1 VV, and
+        Sentinel-2 describe the event disturbance and mapped surface change.
+        The comparison below uses the computed statistics plus the saved
+        report figures.
+        """
+    ),
+    code(
+        """
+        comparison = pd.DataFrame(
+            [
+                [
+                    "MintPy SBAS",
+                    "Pre-failure LOS motion",
+                    "Landslide pixel shows a broad negative trend of about -1.07 +/- 0.08 cm/year; no clear late acceleration is resolved",
+                    "Stack ends on 2017-06-07; sparse acquisitions; atmospheric/seasonal scatter; reference sensitivity",
+                ],
+                [
+                    "LiCSAR coherence",
+                    "Event disturbance",
+                    "Weak separator: mean coherence 0.046 at landslide vs 0.053 at manual reference",
+                    "Both local samples are low coherence; 48-day temporal decorrelation; terrain",
+                ],
+                [
+                    "Sentinel-1 VV",
+                    "Backscatter change",
+                    "Weak local contrast: -0.49 dB at landslide vs -0.89 dB at stable reference",
+                    "Speckle; terrain geometry; moisture; sampling geometry",
+                ],
+                [
+                    "Sentinel-2 true color",
+                    "Visible extent",
+                    f"Best spatial map: optical scar extent {sentinel2_selection['affected_area_ha']:.1f} ha ({sentinel2_selection['affected_area_km2']:.4f} km2)",
+                    "Clouds; illumination; threshold-derived boundary",
+                ],
+                [
+                    "NDVI change",
+                    "Vegetation loss",
+                    ndvi_assessment,
+                    "Seasonality; cloud mask; terrain shadow",
+                ],
+                [
+                    "BSI change",
+                    "Exposed soil/debris",
+                    bsi_assessment,
+                    "Mixed pixels; spectral ambiguity; terrain shadow",
+                ],
+            ],
+            columns=["Method", "Primary signal", "Current assessment", "Key limitation"],
+        )
+        comparison
+        """
+    ),
+    markdown(
+        """
+        The manually selected reference point is preferable for this lab because
+        it is close to the landslide, outside the interpreted scar, and has high
+        temporal coherence. It forces the time series to be interpreted relative
+        to a local stable point instead of relying on MintPy's automatic choice,
+        which may be farther away or affected by different seasonal,
+        atmospheric, or topographic signals. After rereferencing, the selected
+        reference pixel is fixed to zero velocity, so the landslide trend is a
+        relative LOS displacement signal rather than an absolute ground-motion
+        measurement.
+
+        Compared with the published PS/SqueeSAR-style study linked in the
+        assignment, this SBAS recreation is consistent in showing pre-event
+        motion at the landslide, but it is weaker for detecting the final
+        pre-failure acceleration. The decisive limitation is acquisition
+        availability: the LiCSAR/MintPy stack used here ends on 2017-06-07,
+        while the failure occurred on 2017-06-24. The assignment notes that the
+        last few points in the paper's figure were not processed by COMET-LiCSAR,
+        so this workflow cannot reproduce the late-stage deformation behavior
+        shown by the published PS analysis.
+        """
+    ),
+    markdown(
+        """
+        ## 9. Conclusions and Limitations
+
+        The strongest mapping evidence comes from Sentinel-2 true color and
+        NDVI loss. The bright post-event scar is visually clear, and the
+        refined optical mask estimates an affected area of about 80.04 ha
+        (0.8004 km2). Mean NDVI change inside the mapped affected area is
+        -0.229, while the stable reference sample increases by +0.333, so the
+        index supports vegetation removal or replacement by fresh debris. BSI
+        is less useful for this image pair: the affected area has a mean BSI
+        change of -0.108, so a simple positive-BSI-change rule would
+        under-detect the scar.
+
+        Event-spanning coherence is weak for mapping the landslide in this run:
+        the landslide-centered mean coherence is 0.046 and the manual-reference
+        sample is also very low at 0.053. Sentinel-1 VV change is similarly
+        weak: the landslide mean change is -0.49 dB and the stable sample is
+        -0.89 dB, giving small local contrast and strong sensitivity to speckle
+        and terrain effects.
+
+        The main uncertainties are sparse LiCSAR acquisition timing, the
+        pre-event stack ending on 2017-06-07, atmospheric and seasonal phase
+        signals, reference-point sensitivity, low coherence in vegetated steep
+        terrain, layover/shadow, Sentinel-1 speckle, Sentinel-2 cloud and
+        illumination effects, and differing acquisition dates and spatial
+        resolutions across the sensors.
+        """
+    ),
+    code(
+        """
+        generated_figures = sorted(FIGURES_DIR.glob("*.png"))
+        figure_inventory = pd.DataFrame(
+            {
+                "figure": [path.name for path in generated_figures],
+                "relative_path": [str(path.relative_to(LAB_DIR)) for path in generated_figures],
+                "size_kb": [round(path.stat().st_size / 1024, 1) for path in generated_figures],
+            }
+        )
+        display(figure_inventory)
+        print("Notebook setup and MintPy analysis completed successfully.")
+        """
+    ),
+]
+
+nbf.write(nb, OUT_FILE)
+print(f"Wrote {OUT_FILE}")
